@@ -577,6 +577,60 @@ app.post("/booking-worker", authenticateToken, (request, response) => {
       .json({ message: "Successfully Booked", booking_id: id });
   });
 });
+app.get("/booking-details", authenticateToken, (request, response) => {
+  const { user_id, user_type } = request;
+
+  let data_condition;
+  if (user_type === "USER") {
+    data_condition = "user_id";
+  } else if (user_type === "WORKER") {
+    data_condition = "worker_id";
+  } else {
+    return response.status(400).json({ message: "User type not recognized" });
+  }
+
+  const query = `
+    SELECT 
+      booking.id AS booking_id,
+      booking.user_id AS booking_user_id,
+      booking.worker_id AS booking_worker_id,
+      booking.b_status,
+      booking.work_type,
+      booking.booked_at,
+      booking.status_changed_by,
+
+      users.name AS user_name,
+      users.email AS user_email,
+      users.phone_no AS user_phone_no,
+      users.address AS user_address,
+      users.city AS user_city,
+      users.pincode AS user_pincode,
+      
+      worker_applications.name AS worker_name,
+      worker_applications.email AS worker_email,
+      worker_applications.phone_no AS worker_phone_no,
+      worker_applications.types_of_professions AS worker_professions,
+      worker_applications.city AS worker_city,
+      worker_applications.address AS worker_address,
+      worker_applications.pincode AS worker_pincode
+
+    FROM booking 
+    INNER JOIN users ON booking.user_id = users.id 
+    INNER JOIN worker_applications ON booking.worker_id = worker_applications.id 
+    WHERE ${data_condition} = ? 
+    AND worker_applications.is_verified = 'true' 
+    ORDER BY booked_at DESC;
+  `;
+
+  db.query(query, [user_id], (error, result) => {
+    if (error) {
+      return response
+        .status(500)
+        .json({ message: "Internal server error", error: error.message });
+    }
+    response.status(200).json(result);
+  });
+});
 
 app.get("/", (request, response) => {
   response.send("<h1>Hello this is fixit backend</h1>");
