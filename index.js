@@ -537,49 +537,75 @@ app.post("/booking-worker", authenticateToken, (request, response) => {
       .json({ message: "Worker ID and work type are required." });
   }
 
-  const booked_at = new Date();
-  const status = "IN PROGRESS";
-  const status_changed_by = "USER BOOKED";
-  const id = uuidv4();
-
-  const query = `
-    INSERT INTO booking (id, user_id, worker_id, b_status, work_type, booked_at, status_changed_by) 
-    VALUES (?, ?, ?, ?, ?, ?, ?);
+  // Check if there is an active or in-progress booking for the same worker and work type
+  const checkQuery = `
+    SELECT * FROM booking 
+    WHERE user_id = ? AND worker_id = ? AND work_type = ? 
+    AND (b_status = 'IN PROGRESS' OR b_status = 'ACTIVE');
   `;
-  const queryParams = [
-    id,
-    user_id,
-    worker_id,
-    status,
-    work_type,
-    booked_at,
-    status_changed_by,
-  ];
+  const checkParams = [user_id, worker_id, work_type];
 
-  db.query(query, queryParams, (error, result) => {
-    if (error) {
+  db.query(checkQuery, checkParams, (checkError, checkResult) => {
+    if (checkError) {
       // 500 Internal Server Error - Database query error
       return response
         .status(500)
-        .json({ message: "Internal server error", error: error.message });
+        .json({ message: "Internal server error", error: checkError.message });
     }
 
-    if (result.affectedRows === 0) {
-      // 400 Bad Request - Failed to insert booking
+    if (checkResult.length > 0) {
+      // 409 Conflict - User already has an active or in-progress booking with the worker for the same profession
+      return response.status(409).json({
+        message: "You already have booking with this worker for the selected work type.",
+      });
+    }
+
+    // Proceed with booking since no conflict was found
+    const booked_at = new Date();
+    const status = "IN PROGRESS";
+    const status_changed_by = "USER BOOKED";
+    const id = uuidv4();
+
+    const query = `
+      INSERT INTO booking (id, user_id, worker_id, b_status, work_type, booked_at, status_changed_by) 
+      VALUES (?, ?, ?, ?, ?, ?, ?);
+    `;
+    const queryParams = [
+      id,
+      user_id,
+      worker_id,
+      status,
+      work_type,
+      booked_at,
+      status_changed_by,
+    ];
+
+    db.query(query, queryParams, (insertError, insertResult) => {
+      if (insertError) {
+        // 500 Internal Server Error - Database query error
+        return response
+          .status(500)
+          .json({ message: "Internal server error", error: insertError.message });
+      }
+
+      if (insertResult.affectedRows === 0) {
+        // 400 Bad Request - Failed to insert booking
+        return response
+          .status(400)
+          .json({ message: "Failed to insert booking." });
+      }
+
+      // 201 Created - Booking successful
       return response
-        .status(400)
-        .json({ message: "Failed to insert booking." });
-    }
-
-    // 201 Created - Booking successful
-    return response
-      .status(201)
-      .json({ message: "Successfully Booked", booking_id: id });
+        .status(201)
+        .json({ message: "Successfully Booked", booking_id: id });
+    });
   });
 });
+
 app.get("/booking-details", authenticateToken, (request, response) => {
   const { user_id, user_type } = request;
-
+  const { booking_id } = request.query;
   let data_condition;
   if (user_type === "USER") {
     data_condition = "user_id";
@@ -588,6 +614,8 @@ app.get("/booking-details", authenticateToken, (request, response) => {
   } else {
     return response.status(400).json({ message: "User type not recognized" });
   }
+  const bookingCondition = booking_id ? "AND booking.id = ?" : "";
+  const queryParams = booking_id ? [user_id, booking_id] : [user_id];
 
   const query = `
     SELECT 
@@ -612,23 +640,139 @@ app.get("/booking-details", authenticateToken, (request, response) => {
       worker_applications.types_of_professions AS worker_professions,
       worker_applications.city AS worker_city,
       worker_applications.address AS worker_address,
-      worker_applications.pincode AS worker_pincode
+      worker_applications.pincode AS worker_pincode,
+      bills.total_bill as total_bill,
+      bills.bill_status as bill_status
 
     FROM booking 
     INNER JOIN users ON booking.user_id = users.id 
     INNER JOIN worker_applications ON booking.worker_id = worker_applications.id 
+    LEFT JOIN bills ON booking.id = bills.id
     WHERE ${data_condition} = ? 
+    ${bookingCondition}
     AND worker_applications.is_verified = 'true' 
     ORDER BY booked_at DESC;
   `;
 
-  db.query(query, [user_id], (error, result) => {
+  db.query(query, queryParams, (error, result) => {
     if (error) {
       return response
         .status(500)
         .json({ message: "Internal server error", error: error.message });
     }
     response.status(200).json(result);
+  });
+});
+
+app.put("/cancel-booking", authenticateToken, (request, response) => {
+  const { user_id, user_type } = request;
+  const { booking_id } = request.body;
+  const type_of_id = user_type === "USER" ? "user_id" : "worker_id";
+
+  const query = `
+  UPDATE booking 
+  SET b_status = "CANCELLED",
+      status_changed_by = CONCAT(?, ' CANCELLED')
+  WHERE id = (?) AND ${type_of_id} = (?) AND (b_status != "CANCELLED" OR b_status != "COMPLETED");
+`;
+  db.query(query, [user_type, booking_id, user_id], (error, result) => {
+    if (error) {
+      return response.status(500).json({ message: error.message });
+    }
+
+    if (result.affectedRows === 0) {
+      return response.status(404).json({
+        message:
+          "No matching active booking found for this user/worker or booking is already cancelled",
+      });
+    }
+
+    return response
+      .status(200)
+      .json({ message: "Successfully cancelled the booking" });
+  });
+});
+
+app.post("/generate-bill", authenticateToken, (request, response) => {
+  const { booking_id, total_bill } = request.body;
+  const insertBillQuery = `INSERT INTO bills(id, total_bill, bill_status) VALUES (?, ?, 'NOT PAID');`;
+  const { user_type } = request;
+
+  // Check if the user is authorized
+  if (user_type === "USER") {
+    return response.status(401).json({ message: "You are not authorized" });
+  }
+
+  // Insert bill into the database
+  db.query(insertBillQuery, [booking_id, total_bill], (error, result) => {
+    if (error) {
+      return response.status(500).json({ message: error });
+    }
+    // Update booking status
+    const updateBookingQuery = `UPDATE booking SET b_status='ACTIVE', status_changed_by='WORKER ACCEPTED' WHERE id=?;`;
+    db.query(updateBookingQuery, [booking_id], (error, result) => {
+      if (error) {
+        return response.status(500).json({ message: "Internal server error" });
+      }
+      return response
+        .status(200)
+        .json({ message: "Successfully updated the booking and bill" });
+    });
+  });
+});
+
+app.put("/complete-booking", authenticateToken, (request, response) => {
+  const { booking_id } = request.body;
+  const { user_type } = request;
+
+  // Check if the user is authorized to complete the booking
+  if (user_type === "WORKER") {
+    return response
+      .status(401)
+      .json({ message: "You are not authorized to complete the booking" });
+  }
+
+  // Begin transaction
+  db.beginTransaction((error) => {
+    if (error) {
+      return response.status(500).json({ message: "Internal server error" });
+    }
+
+    const updateBookingQuery = `UPDATE booking SET b_status='COMPLETED', status_changed_by='USER PAID AMOUNT' WHERE id = ?;`;
+    db.query(updateBookingQuery, [booking_id], (error, result) => {
+      if (error) {
+        return db.rollback(() => {
+          response
+            .status(500)
+            .json({ message: "Error updating booking status" });
+        });
+      }
+
+      const updateBillQuery = `UPDATE bills SET bill_status='PAID' WHERE id = ?;`;
+      db.query(updateBillQuery, [booking_id], (error, result) => {
+        if (error) {
+          return db.rollback(() => {
+            response
+              .status(500)
+              .json({ message: "Error updating bill status" });
+          });
+        }
+
+        // Commit transaction if both queries succeed
+        db.commit((error) => {
+          if (error) {
+            return db.rollback(() => {
+              response
+                .status(500)
+                .json({ message: "Error completing transaction" });
+            });
+          }
+          response
+            .status(200)
+            .json({ message: "Successfully updated booking and bill status" });
+        });
+      });
+    });
   });
 });
 
