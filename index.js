@@ -556,7 +556,8 @@ app.post("/booking-worker", authenticateToken, (request, response) => {
     if (checkResult.length > 0) {
       // 409 Conflict - User already has an active or in-progress booking with the worker for the same profession
       return response.status(409).json({
-        message: "You already have booking with this worker for the selected work type.",
+        message:
+          "You already have booking with this worker for the selected work type.",
       });
     }
 
@@ -583,9 +584,10 @@ app.post("/booking-worker", authenticateToken, (request, response) => {
     db.query(query, queryParams, (insertError, insertResult) => {
       if (insertError) {
         // 500 Internal Server Error - Database query error
-        return response
-          .status(500)
-          .json({ message: "Internal server error", error: insertError.message });
+        return response.status(500).json({
+          message: "Internal server error",
+          error: insertError.message,
+        });
       }
 
       if (insertResult.affectedRows === 0) {
@@ -774,6 +776,77 @@ app.put("/complete-booking", authenticateToken, (request, response) => {
       });
     });
   });
+});
+
+const getHashedPassword = async (password) => {
+  const hashp = await bcrypt.hash(password, 10);
+  return hashp;
+};
+
+app.put("/update-profile", authenticateToken, async (req, res) => {
+  const { user_id, user_type } = req; // assuming user ID is stored in the token payload
+  let updates = req.body;
+  const tableName = user_type === "USER" ? "users" : "worker_applications";
+  // Ensure at least one field is updated
+  if (!updates || Object.keys(updates).length === 0) {
+    return res.status(400).json({ message: "No fields provided for update" });
+  }
+
+  try {
+    if (updates.password !== undefined) {
+      // Await hashed password
+      updates.password = await getHashedPassword(updates.password);
+    }
+    if (updates.professions) {
+      updates = {
+        ...updates,
+        types_of_professions: updates.professions.join(","),
+      };
+    }
+    if (updates.address) {
+      const { address, city, pincode } = updates.address;
+      updates = {
+        ...updates,
+        ...(address && { address }), // add only if address is defined
+        ...(city && { city }), // add only if city is defined
+        ...(pincode && { pincode }), // add only if pincode is defined
+      }; // Remove the nested address object
+    }
+
+    delete updates.confirmNewPassword;
+    delete updates.professions;
+
+    // Construct dynamic SQL query for updating only modified fields
+    const updateFields = [];
+    const values = [];
+
+    for (let field in updates) {
+      updateFields.push(`${field} = ?`);
+      values.push(updates[field]);
+    }
+
+    values.push(user_id); // Add user ID at the end for the WHERE clause
+
+    const sql = `UPDATE ${tableName} SET ${updateFields.join(
+      ", "
+    )} WHERE id = ?`;
+
+    db.query(sql, values, (err, result) => {
+      if (err) {
+        console.error("Error updating profile:", err);
+        return res.status(500).json({ message: "Error updating profile" });
+      }
+
+      if (result.affectedRows === 0) {
+        return res.status(404).json({ message: "User not found" });
+      }
+
+      res.json({ message: "Profile updated successfully" });
+    });
+  } catch (error) {
+    console.error("Error hashing password:", error);
+    return res.status(500).json({ message: "Error updating profile" });
+  }
 });
 
 app.get("/", (request, response) => {
