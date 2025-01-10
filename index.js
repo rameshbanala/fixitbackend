@@ -17,14 +17,15 @@ app.use(
   "/worker_proofs",
   express.static(path.join(__dirname, "../worker_proofs"))
 );
+require("dotenv").config();
 
-const MY_SECRET_TOKEN = "THIS_IS_FIXIT_LOGIN";
+const MY_SECRET_TOKEN = process.env.JWT_SECRET;
 
 const db = mysql.createConnection({
-  host: "localhost",
-  user: "root", // Replace with your MySQL username
+  host: process.env.DB_HOST,
+  user: process.env.DB_USER, // Replace with your MySQL username
   password: "", // Replace with your MySQL password
-  database: "projectdb", // Database name
+  database: process.env.DB_NAME, // Database name
 });
 
 db.connect((err) => {
@@ -133,19 +134,19 @@ app.post("/worker-application", upload.single("file"), (req, res) => {
 });
 
 // File retrieval endpoint
-app.get("/files/:id", (req, res) => {
-  const fileId = req.params.id;
+// app.get("/files/:id", (req, res) => {
+//   const fileId = req.params.id;
 
-  const query = `SELECT * FROM worker_files WHERE id = ?`;
-  db.query(query, [fileId], (err, results) => {
-    if (err || results.length === 0) {
-      return res.status(404).json({ message: "File not found" });
-    }
+//   const query = `SELECT * FROM worker_files WHERE id = ?`;
+//   db.query(query, [fileId], (err, results) => {
+//     if (err || results.length === 0) {
+//       return res.status(404).json({ message: "File not found" });
+//     }
 
-    const file = results[0];
-    res.sendFile(path.resolve(__dirname, file.file_path));
-  });
-});
+//     const file = results[0];
+//     res.sendFile(path.resolve(__dirname, file.file_path));
+//   });
+// });
 
 app.post("/user-signup", async (req, res) => {
   const { name, dob, email, phone_no, password, address, city, pincode } =
@@ -853,6 +854,6 @@ app.get("/", (request, response) => {
   response.send("<h1>Hello this is fixit backend</h1>");
 });
 
-app.listen(8000, () => {
+app.listen(process.env.PORT, () => {
   console.log("Listening at http://localhost:8000");
 });
