@@ -15,7 +15,7 @@ app.use(express.json());
 app.use(cors());
 app.use(
   "/worker_proofs",
-  express.static(path.join(__dirname, "../worker_proofs"))
+  express.static(path.join(__dirname, "./worker_proofs"))
 );
 require("dotenv").config();
 
@@ -38,7 +38,7 @@ db.connect((err) => {
 
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
-    cb(null, path.join(__dirname, "../worker_proofs"));
+    cb(null, path.join(__dirname, "./worker_proofs"));
   },
   filename: (req, file, cb) => {
     cb(null, Date.now() + path.extname(file.originalname));
