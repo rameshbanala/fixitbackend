@@ -24,7 +24,7 @@ const MY_SECRET_TOKEN = process.env.JWT_SECRET;
 const db = mysql.createConnection({
   host: process.env.DB_HOST,
   user: process.env.DB_USER, // Replace with your MySQL username
-  password: "", // Replace with your MySQL password
+  password: process.env.DB_PASSWORD, // Replace with your MySQL password
   database: process.env.DB_NAME, // Database name
 });
 
