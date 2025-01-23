@@ -561,24 +561,53 @@ app.get("/admin-page-details", authenticateToken, (request, response) => {
 
 app.post("/verify-the-worker", authenticateToken, (request, response) => {
   const { id } = request.body;
-
-  // Parameterized query to prevent SQL injection
-  const query = `UPDATE worker_applications SET is_verified = ? WHERE id = ?`;
-
-  db.query(query, ["true", id], (err, result) => {
+  const query2 = `SELECT email FROM worker_applications WHERE id = ?`;
+  db.query(query2, [id], (err, result) => {
     if (err) {
       console.error("Database error:", err);
       return response
         .status(500)
         .json({ message: "Internal Server Error", error: err.message });
     }
-
-    // Check if any row was affected
-    if (result.affectedRows === 0) {
+    if (result.length === 0) {
       return response.status(404).json({ message: "Worker not found" });
     }
+    const email = result[0].email;
 
-    response.status(200).json({ message: "Document verified successfully" });
+    const query = `UPDATE worker_applications SET is_verified = ? WHERE id = ?`;
+
+    db.query(query, ["true", id], (err, result) => {
+      if (err) {
+        console.error("Database error:", err);
+        return response
+          .status(500)
+          .json({ message: "Internal Server Error", error: err.message });
+      }
+
+      // Check if any row was affected
+      if (result.affectedRows === 0) {
+        return response.status(404).json({ message: "Worker not found" });
+      }
+      const subject = "FixIt Account Verification";
+      const text = `
+Dear Worker,
+
+Congratulations! 
+Your application has been verified successfully. You can now start accepting work orders.
+
+Thank you for choosing FixIt!
+
+Best Regards,
+
+FixIt Team
+`;
+      sendMail(email, subject, text).then((result) => {
+        if (result) {
+          return response.status(200).json({ message: "Worker verified" });
+        }
+        return response.status(500).json({ message: "Error sending email" });
+      });
+    });
   });
 });
 
@@ -601,42 +630,61 @@ app.post("/reject-the-worker", authenticateToken, (request, response) => {
     // Destructure email, password, and file_path from the result
     const { email, password, file_path } = result[0];
 
-    const complete_path = path.join("D:/projects/", file_path);
+    // const complete_path = path.join("D:/projects/", file_path);
 
-    // Delete the file
-    fs.unlink(complete_path, (err) => {
-      if (err) {
-        console.error("File deletion failed:", err);
-        return response.status(500).json({ message: "File deletion failed" });
+    // // Delete the file
+    // fs.unlink(complete_path, (err) => {
+    //   if (err) {
+    //     console.error("File deletion failed:", err);
+    //     return response.status(500).json({ message: "File deletion failed" });
+    //   }
+
+    //   // Insert into worker_application_rejected
+
+    // });
+    const query_2 = `INSERT INTO worker_application_rejected (email) VALUES (?)`;
+    db.query(query_2, [email], (error, result) => {
+      if (error) {
+        console.error("Database error:", error);
+        return response
+          .status(500)
+          .json({ message: "Internal Server Error", error: error.message });
       }
 
-      // Insert into worker_application_rejected
-      const query_2 = `INSERT INTO worker_application_rejected (email) VALUES (?)`;
-      db.query(query_2, [email], (error, result) => {
+      if (result.affectedRows === 0) {
+        return response
+          .status(404)
+          .json({ message: "Worker rejection failed" });
+      }
+
+      // Delete the original entry from worker_applications
+      const query_3 = `DELETE FROM worker_applications WHERE id = ?`;
+      db.query(query_3, [id], (error, result) => {
         if (error) {
           console.error("Database error:", error);
           return response
             .status(500)
             .json({ message: "Internal Server Error", error: error.message });
         }
+        const subject = "FixIt Account Verification";
+        const text = `
+Dear Worker,
 
-        if (result.affectedRows === 0) {
-          return response
-            .status(404)
-            .json({ message: "Worker rejection failed" });
-        }
+We regret to inform you that your application has been rejected.
 
-        // Delete the original entry from worker_applications
-        const query_3 = `DELETE FROM worker_applications WHERE id = ?`;
-        db.query(query_3, [id], (error, result) => {
-          if (error) {
-            console.error("Database error:", error);
-            return response
-              .status(500)
-              .json({ message: "Internal Server Error", error: error.message });
+Thank you for choosing FixIt!
+
+
+Best Regards,
+
+FixIt Team
+`;
+
+        sendMail(email, subject, text).then((result) => {
+          if (result) {
+            return response.status(200).json({ message: "Worker rejected" });
           }
-
-          response.status(200).json({ message: "Rejected Successfully" });
+          return response.status(500).json({ message: "Error sending email" });
         });
       });
     });
@@ -784,46 +832,132 @@ app.post("/booking-worker", authenticateToken, (request, response) => {
       });
     }
 
-    // Proceed with booking since no conflict was found
-    const booked_at = new Date();
-    const status = "IN PROGRESS";
-    const status_changed_by = "USER BOOKED";
-    const id = uuidv4();
-
-    const query = `
-      INSERT INTO booking (id, user_id, worker_id, b_status, work_type, booked_at, status_changed_by) 
-      VALUES (?, ?, ?, ?, ?, ?, ?);
-    `;
-    const queryParams = [
-      id,
-      user_id,
-      worker_id,
-      status,
-      work_type,
-      booked_at,
-      status_changed_by,
-    ];
-
-    db.query(query, queryParams, (insertError, insertResult) => {
-      if (insertError) {
-        // 500 Internal Server Error - Database query error
-        return response.status(500).json({
-          message: "Internal server error",
-          error: insertError.message,
-        });
-      }
-
-      if (insertResult.affectedRows === 0) {
-        // 400 Bad Request - Failed to insert booking
+    const query = `SELECT * FROM worker_applications WHERE id = ? AND is_verified = 'true';`;
+    db.query(query, [worker_id], (error, result) => {
+      if (error) {
         return response
-          .status(400)
-          .json({ message: "Failed to insert booking." });
+          .status(500)
+          .json({ message: "Internal server error", error: error.message });
       }
 
-      // 201 Created - Booking successful
-      return response
-        .status(201)
-        .json({ message: "Successfully Booked", booking_id: id });
+      if (result.length === 0) {
+        return response.status(404).json({ message: "Worker not found" });
+      }
+
+      const worker = result[0];
+      const workerEmail = worker.email;
+
+      const query = `SELECT * FROM users WHERE id = ?`;
+      db.query(query, [user_id], (error, result) => {
+        if (error) {
+          return response
+            .status(500)
+            .json({ message: "Internal server error", error: error.message });
+        }
+
+        const user = result[0];
+        const userEmail = user.email;
+
+        // Proceed with booking since no conflict was found
+        const booked_at = new Date();
+        const status = "IN PROGRESS";
+        const status_changed_by = "USER BOOKED";
+        const id = uuidv4();
+
+        const query = `
+          INSERT INTO booking (id, user_id, worker_id, b_status, work_type, booked_at, status_changed_by) 
+          VALUES (?, ?, ?, ?, ?, ?, ?);
+        `;
+        const queryParams = [
+          id,
+          user_id,
+          worker_id,
+          status,
+          work_type,
+          booked_at,
+          status_changed_by,
+        ];
+
+        db.query(query, queryParams, (insertError, insertResult) => {
+          if (insertError) {
+            // 500 Internal Server Error - Database query error
+            return response.status(500).json({
+              message: "Internal server error",
+              error: insertError.message,
+            });
+          }
+
+          if (insertResult.affectedRows === 0) {
+            // 400 Bad Request - Failed to insert booking
+            return response
+              .status(400)
+              .json({ message: "Failed to insert booking." });
+          }
+
+          // 201 Created - Booking successful
+          const userSubject = "FixIt Booking Confirmation";
+          const userText = `
+Dear User,
+            
+Your booking has been confirmed successfully.
+            
+You can now track the status of your booking in the My Booking Section.
+            
+Thank you for choosing FixIt!
+            
+Best Regards,
+FixIt Team
+          `;
+
+          const workerSubject = "FixIt New Booking Notification";
+          const workerText = `
+Dear Worker,
+            
+You have received a new booking.
+            
+Please check your FixIt account for more details.
+            
+Best Regards,
+FixIt Team
+          `;
+
+          // Send email to user
+          sendMail(userEmail, userSubject, userText)
+            .then((userMailResult) => {
+              if (!userMailResult) {
+                return response
+                  .status(500)
+                  .json({ message: "Error sending email to user" });
+              }
+
+              // Send email to worker
+              sendMail(workerEmail, workerSubject, workerText)
+                .then((workerMailResult) => {
+                  if (!workerMailResult) {
+                    return response
+                      .status(500)
+                      .json({ message: "Error sending email to worker" });
+                  }
+
+                  return response
+                    .status(201)
+                    .json({ message: "Successfully Booked", booking_id: id });
+                })
+                .catch((workerMailError) => {
+                  return response.status(500).json({
+                    message: "Error sending email to worker",
+                    error: workerMailError.message,
+                  });
+                });
+            })
+            .catch((userMailError) => {
+              return response.status(500).json({
+                message: "Error sending email to user",
+                error: userMailError.message,
+              });
+            });
+        });
+      });
     });
   });
 });
@@ -894,27 +1028,136 @@ app.put("/cancel-booking", authenticateToken, (request, response) => {
   const { booking_id } = request.body;
   const type_of_id = user_type === "USER" ? "user_id" : "worker_id";
 
-  const query = `
-  UPDATE booking 
-  SET b_status = "CANCELLED",
-      status_changed_by = CONCAT(?, ' CANCELLED')
-  WHERE id = (?) AND ${type_of_id} = (?) AND (b_status != "CANCELLED" OR b_status != "COMPLETED");
-`;
-  db.query(query, [user_type, booking_id, user_id], (error, result) => {
+  const query = `SELECT * FROM booking WHERE id = ?;`;
+  db.query(query, [booking_id], (error, result) => {
     if (error) {
-      return response.status(500).json({ message: error.message });
+      return response
+        .status(500)
+        .json({ message: "Internal server error", error: error.message });
     }
 
-    if (result.affectedRows === 0) {
-      return response.status(404).json({
-        message:
-          "No matching active booking found for this user/worker or booking is already cancelled",
+    if (result.length === 0) {
+      return response.status(404).json({ message: "Booking not found" });
+    }
+
+    const { user_id, worker_id, b_status } = result[0];
+
+    const query = `SELECT * FROM worker_applications WHERE id = ?;`;
+    db.query(query, [worker_id], (error, result) => {
+      if (error) {
+        return response
+          .status(500)
+          .json({ message: "Internal server error", error: error.message });
+      }
+
+      if (result.length === 0) {
+        return response.status(404).json({ message: "Worker not found" });
+      }
+
+      const worker = result[0];
+      const workerEmail = worker.email;
+
+      const query = `SELECT * FROM users WHERE id = ?;`;
+      db.query(query, [user_id], (error, result) => {
+        if (error) {
+          return response
+            .status(500)
+            .json({ message: "Internal server error", error: error.message });
+        }
+
+        const user = result[0];
+        const userEmail = user.email;
+
+        const query = `UPDATE booking SET b_status = 'CANCELLED', status_changed_by = 'USER CANCELLED' WHERE id = ?;`;
+        db.query(query, [booking_id], (error, result) => {
+          if (error) {
+            return response
+              .status(500)
+              .json({ message: "Internal server error", error: error.message });
+          }
+
+          const query = `
+          UPDATE booking 
+          SET b_status = "CANCELLED",
+              status_changed_by = CONCAT(?, ' CANCELLED')
+          WHERE id = (?) AND ${type_of_id} = (?) AND (b_status != "CANCELLED" OR b_status != "COMPLETED");
+        `;
+          db.query(query, [user_type, booking_id, user_id], (error, result) => {
+            if (error) {
+              return response.status(500).json({ message: error.message });
+            }
+
+            if (result.affectedRows === 0) {
+              return response.status(404).json({
+                message:
+                  "No matching active booking found for this user/worker or booking is already cancelled",
+              });
+            }
+
+            const userSubject = "FixIt Booking Cancellation";
+            const userText = `
+Dear User,
+
+Your booking has been cancelled successfully.
+
+Thank you for choosing FixIt!
+
+Best Regards,
+FixIt Team
+          `;
+
+            const workerSubject = "FixIt Booking Cancellation";
+            const workerText = `
+Dear Worker,
+
+A Booking is Cancelled.
+Check your FixIt account for more details.
+
+Thank you for using FixIt!
+
+Best Regards,
+FixIt Team
+          `;
+
+            // Send email to user
+            sendMail(userEmail, userSubject, userText)
+              .then((userMailResult) => {
+                if (!userMailResult) {
+                  return response
+                    .status(500)
+                    .json({ message: "Error sending email to user" });
+                }
+
+                // Send email to worker
+                sendMail(workerEmail, workerSubject, workerText)
+                  .then((workerMailResult) => {
+                    if (!workerMailResult) {
+                      return response
+                        .status(500)
+                        .json({ message: "Error sending email to worker" });
+                    }
+
+                    return response
+                      .status(200)
+                      .json({ message: "Booking cancelled successfully" });
+                  })
+                  .catch((workerMailError) => {
+                    return response.status(500).json({
+                      message: "Error sending email to worker",
+                      error: workerMailError.message,
+                    });
+                  });
+              })
+              .catch((userMailError) => {
+                return response.status(500).json({
+                  message: "Error sending email to user",
+                  error: userMailError.message,
+                });
+              });
+          });
+        });
       });
-    }
-
-    return response
-      .status(200)
-      .json({ message: "Successfully cancelled the booking" });
+    });
   });
 });
 
@@ -927,21 +1170,71 @@ app.post("/generate-bill", authenticateToken, (request, response) => {
   if (user_type === "USER") {
     return response.status(401).json({ message: "You are not authorized" });
   }
-
-  // Insert bill into the database
-  db.query(insertBillQuery, [booking_id, total_bill], (error, result) => {
+  const query = `SELECT * FROM booking WHERE id = ?;`;
+  db.query(query, [booking_id], (error, result) => {
     if (error) {
-      return response.status(500).json({ message: error });
+      return response.status(500).json({ message: "Internal server error" });
     }
-    // Update booking status
-    const updateBookingQuery = `UPDATE booking SET b_status='ACTIVE', status_changed_by='WORKER ACCEPTED' WHERE id=?;`;
-    db.query(updateBookingQuery, [booking_id], (error, result) => {
+
+    if (result.length === 0) {
+      return response.status(404).json({ message: "Booking not found" });
+    }
+
+    const { user_id } = result[0];
+
+    const query = `SELECT * FROM users WHERE id = ?;`;
+    db.query(query, [user_id], (error, result) => {
       if (error) {
         return response.status(500).json({ message: "Internal server error" });
       }
-      return response
-        .status(200)
-        .json({ message: "Successfully updated the booking and bill" });
+
+      const user = result[0];
+      const userEmail = user.email;
+      db.query(insertBillQuery, [booking_id, total_bill], (error, result) => {
+        if (error) {
+          return response.status(500).json({ message: error });
+        }
+        // Update booking status
+        const updateBookingQuery = `UPDATE booking SET b_status='ACTIVE', status_changed_by='WORKER ACCEPTED' WHERE id=?;`;
+        db.query(updateBookingQuery, [booking_id], (error, result) => {
+          if (error) {
+            return response
+              .status(500)
+              .json({ message: "Internal server error" });
+          }
+          const subject = "FixIt Bill Generation";
+          const text = `
+Dear User,
+
+A bill has been generated for your booking.
+
+Total Bill: Rs.${total_bill}
+
+Please login to your FixIt account to view and pay the bill.
+
+Thank you for choosing FixIt!
+
+Best Regards,
+FixIt Team
+        `;
+          sendMail(userEmail, subject, text)
+            .then((result) => {
+              if (result) {
+                return response
+                  .status(200)
+                  .json({ message: "Bill generated successfully" });
+              }
+              return response
+                .status(500)
+                .json({ message: "Error sending email" });
+            })
+            .catch((error) => {
+              return response
+                .status(500)
+                .json({ message: "Error sending email" });
+            });
+        });
+      });
     });
   });
 });
@@ -956,45 +1249,152 @@ app.put("/complete-booking", authenticateToken, (request, response) => {
       .status(401)
       .json({ message: "You are not authorized to complete the booking" });
   }
+  const query = `SELECT * FROM booking WHERE id = ?;`;
 
-  // Begin transaction
-  db.beginTransaction((error) => {
+  db.query(query, [booking_id], (error, result) => {
     if (error) {
       return response.status(500).json({ message: "Internal server error" });
     }
 
-    const updateBookingQuery = `UPDATE booking SET b_status='COMPLETED', status_changed_by='USER PAID AMOUNT' WHERE id = ?;`;
-    db.query(updateBookingQuery, [booking_id], (error, result) => {
+    if (result.length === 0) {
+      return response.status(404).json({ message: "Booking not found" });
+    }
+    const { worker_id, b_status, user_id } = result[0];
+
+    const query = `SELECT * FROM worker_applications WHERE id = ?;`;
+    db.query(query, [worker_id], (error, result) => {
       if (error) {
-        return db.rollback(() => {
-          response
-            .status(500)
-            .json({ message: "Error updating booking status" });
-        });
+        return response.status(500).json({ message: "Internal server error" });
       }
 
-      const updateBillQuery = `UPDATE bills SET bill_status='PAID' WHERE id = ?;`;
-      db.query(updateBillQuery, [booking_id], (error, result) => {
+      if (result.length === 0) {
+        return response.status(404).json({ message: "Worker not found" });
+      }
+
+      const worker = result[0];
+      const workerEmail = worker.email;
+
+      const query = `SELECT * FROM users WHERE id = ?;`;
+      db.query(query, [user_id], (error, result) => {
         if (error) {
-          return db.rollback(() => {
-            response
-              .status(500)
-              .json({ message: "Error updating bill status" });
-          });
+          return response
+            .status(500)
+            .json({ message: "Internal server error" });
         }
 
-        // Commit transaction if both queries succeed
-        db.commit((error) => {
+        const user = result[0];
+        const userEmail = user.email;
+
+        const query = `UPDATE booking SET b_status = 'COMPLETED', status_changed_by = 'USER COMPLETED' WHERE id = ?;`;
+        db.query(query, [booking_id], (error, result) => {
           if (error) {
-            return db.rollback(() => {
-              response
-                .status(500)
-                .json({ message: "Error completing transaction" });
-            });
+            return response
+              .status(500)
+              .json({ message: "Internal server error" });
           }
-          response
-            .status(200)
-            .json({ message: "Successfully updated booking and bill status" });
+
+          // Begin transaction
+          db.beginTransaction((error) => {
+            if (error) {
+              return response
+                .status(500)
+                .json({ message: "Internal server error" });
+            }
+
+            const updateBookingQuery = `UPDATE booking SET b_status='COMPLETED', status_changed_by='USER PAID AMOUNT' WHERE id = ?;`;
+            db.query(updateBookingQuery, [booking_id], (error, result) => {
+              if (error) {
+                return db.rollback(() => {
+                  response
+                    .status(500)
+                    .json({ message: "Error updating booking status" });
+                });
+              }
+
+              const updateBillQuery = `UPDATE bills SET bill_status='PAID' WHERE id = ?;`;
+              db.query(updateBillQuery, [booking_id], (error, result) => {
+                if (error) {
+                  return db.rollback(() => {
+                    response
+                      .status(500)
+                      .json({ message: "Error updating bill status" });
+                  });
+                }
+
+                // Commit transaction if both queries succeed
+                db.commit((error) => {
+                  if (error) {
+                    return db.rollback(() => {
+                      response
+                        .status(500)
+                        .json({ message: "Error completing transaction" });
+                    });
+                  }
+                  const userSubject = "FixIt Booking Completion";
+                  const userText = `
+Dear User,
+
+Your booking has been completed successfully.
+
+Thank you for choosing FixIt!
+
+Best Regards,
+FixIt Team
+          `;
+
+                  const workerSubject = "FixIt Booking Completion";
+                  const workerText = `
+Dear Worker,
+
+A Booking is Completed.
+Check your FixIt account for more details.
+
+Thank you for using FixIt!
+
+Best Regards,
+
+FixIt Team
+          `;
+
+                  // Send email to user
+                  sendMail(userEmail, userSubject, userText)
+                    .then((userMailResult) => {
+                      if (!userMailResult) {
+                        return response
+                          .status(500)
+                          .json({ message: "Error sending email to user" });
+                      }
+
+                      // Send email to worker
+                      sendMail(workerEmail, workerSubject, workerText)
+                        .then((workerMailResult) => {
+                          if (!workerMailResult) {
+                            return response.status(500).json({
+                              message: "Error sending email to worker",
+                            });
+                          }
+
+                          return response.status(200).json({
+                            message: "Booking completed successfully",
+                          });
+                        })
+                        .catch((workerMailError) => {
+                          return response.status(500).json({
+                            message: "Error sending email to worker",
+                            error: workerMailError.message,
+                          });
+                        });
+                    })
+                    .catch((userMailError) => {
+                      return response.status(500).json({
+                        message: "Error sending email to user",
+                        error: userMailError.message,
+                      });
+                    });
+                });
+              });
+            });
+          });
         });
       });
     });
