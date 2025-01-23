@@ -11,6 +11,7 @@ const nodemailer = require("nodemailer");
 const fs = require("fs");
 const { workerData } = require("worker_threads");
 const { request } = require("http");
+const { send } = require("process");
 
 app.use(express.json());
 app.use(cors());
@@ -36,6 +37,10 @@ db.connect((err) => {
     console.log("Connected to MySQL database");
   }
 });
+const getHashedPassword = async (password) => {
+  const hashp = await bcrypt.hash(password, 10);
+  return hashp;
+};
 
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
@@ -381,6 +386,122 @@ app.post("/login", (req, res) => {
         jwt_token: jwtToken,
         user_type: is_admin ? "ADMIN" : user_type,
       });
+    }
+  });
+});
+
+app.post("/forgot-password", (req, res) => {
+  const { email, user_type } = req.body;
+  const tableName = user_type === "USER" ? "users" : "worker_applications";
+
+  // Check if the email exists in the database
+  const checkUserQuery = `SELECT * FROM ${tableName} WHERE email = ?`;
+  db.query(checkUserQuery, [email], (err, result) => {
+    if (err) {
+      console.error("Database error:", err);
+      return res.status(500).json({ message: "Internal Server Error" });
+    }
+
+    if (result.length === 0) {
+      return res.status(404).json({ message: "Email not registered" });
+    }
+
+    // Generate OTP and send email
+    const generateOtp = () => Math.floor(1000 + Math.random() * 9000);
+    const otp = generateOtp();
+    const subject = "FixIt Password Reset OTP";
+    const text = `
+Dear User,
+
+We received a request to reset your password.
+
+Your OTP for password reset is:
+---- ${otp} ----
+
+This OTP is valid for 10 minutes.
+
+If you did not request this, please ignore this email.
+
+Thank you,
+FixIt Team`;
+
+    sendMail(email, subject, text)
+      .then(async (result) => {
+        if (result) {
+          const query = `
+          INSERT INTO otp_verifications (email, otp) 
+          VALUES (?, ?) 
+          ON DUPLICATE KEY UPDATE otp = VALUES(otp), created_at = CURRENT_TIMESTAMP;
+          `;
+          await db.query(query, [email, otp]);
+          res.status(200).json({ message: "OTP sent successfully" });
+        } else {
+          res.status(500).json({ message: "Error sending OTP" });
+        }
+      })
+      .catch((error) => {
+        console.error("Error sending OTP:", error);
+        res.status(500).json({ message: "Error sending OTP" });
+      });
+  });
+});
+app.post("/reset-password", (req, res) => {
+  const { email, otp, newPassword, user_type } = req.body;
+  const tableName = user_type === "USER" ? "users" : "worker_applications";
+  const query = `SELECT * FROM otp_verifications WHERE email = ?`;
+  db.query(query, [email], (err, result) => {
+    if (err) {
+      console.error("Database error:", err);
+      return res.status(500).json({ message: "Internal Server Error" });
+    }
+
+    if (result.length === 0) {
+      return res.status(404).json({ message: "Email not found" });
+    }
+
+    const otpData = result[0];
+    const originalOtp = parseInt(otpData.otp, 10);
+    if (originalOtp === parseInt(otp, 10)) {
+      // Delete the OTP from the database
+      const deleteQuery = `DELETE FROM otp_verifications WHERE email = ?`;
+      db.query(deleteQuery, [email], async (deleteErr) => {
+        if (deleteErr) {
+          console.error("Error deleting OTP:", deleteErr);
+          return res.status(500).json({ message: "Internal Server Error" });
+        }
+
+        // Update password in the database
+        const hashedPassword = await getHashedPassword(newPassword); // Use bcrypt or similar library to hash the password
+        const updatePasswordQuery = `UPDATE ${tableName} SET password = ? WHERE email = ?`;
+        db.query(updatePasswordQuery, [hashedPassword, email], (updateErr) => {
+          if (updateErr) {
+            console.error("Error updating password:", updateErr);
+            return res.status(500).json({ message: "Internal Server Error" });
+          }
+          const subject = "FixIt Password Reset Successful";
+          const text = `
+Dear User,
+
+We are pleased to inform you that your password has been successfully reset.
+
+If you did not request this change, please contact our support team immediately.
+
+Thank you for using FixIt!
+
+Best Regards,
+FixIt Team`;
+          sendMail(email, subject, text).then((result) => {
+            if (result) {
+              return res
+                .status(200)
+                .json({ message: "Password reset successfully" });
+            }
+            return res.status(500).json({ message: "Error sending email" });
+          });
+        });
+      });
+    } else {
+      return res.status(400).json({ message: "Invalid OTP" });
     }
   });
 });
@@ -879,11 +1000,6 @@ app.put("/complete-booking", authenticateToken, (request, response) => {
     });
   });
 });
-
-const getHashedPassword = async (password) => {
-  const hashp = await bcrypt.hash(password, 10);
-  return hashp;
-};
 
 app.put("/update-profile", authenticateToken, async (req, res) => {
   const { user_id, user_type } = req; // assuming user ID is stored in the token payload
