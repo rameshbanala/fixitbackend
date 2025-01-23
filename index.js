@@ -7,6 +7,7 @@ const jwt = require("jsonwebtoken");
 const { v4: uuidv4 } = require("uuid");
 const app = express();
 const path = require("path");
+const nodemailer = require("nodemailer");
 const fs = require("fs");
 const { workerData } = require("worker_threads");
 const { request } = require("http");
@@ -36,6 +37,8 @@ db.connect((err) => {
   }
 });
 
+let OTP = 0;
+
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
     cb(null, path.join(__dirname, "./worker_proofs"));
@@ -44,6 +47,32 @@ const storage = multer.diskStorage({
     cb(null, Date.now() + path.extname(file.originalname));
   },
 });
+
+//send mails
+const sendMail = async (toEmail, subject, text) => {
+  const transporter = nodemailer.createTransport({
+    service: "Gmail", // Use your email provider
+    auth: {
+      user: process.env.APP_MAIL,
+      pass: process.env.APP_PASSWORD,
+    },
+  });
+
+  // Email details
+  const mailOptions = {
+    from: process.env.APP_MAIL,
+    to: toEmail,
+    subject,
+    text,
+  };
+
+  try {
+    await transporter.sendMail(mailOptions);
+    return true;
+  } catch (error) {
+    return false;
+  }
+};
 
 // File type and size validation
 const upload = multer({
@@ -61,6 +90,81 @@ const upload = multer({
     }
     cb("Error: File type not supported");
   },
+});
+
+app.post("/send-otp", (req, res) => {
+  const { email } = req.body;
+  const generateOtp = () => {
+    return Math.floor(1000 + Math.random() * 9000);
+  };
+  const otp = generateOtp();
+  OTP = otp;
+  const subject = "OTP for Fixit Account Verification";
+  const text = `
+Dear User,
+
+Thank you for choosing FixIt!
+
+Your OTP for account verification is:
+---- ${otp} ----
+
+Please use this OTP to verify your account.
+This OTP is valid for 10 minutes.
+
+If you did not request this, please ignore this email.
+
+Thank you,
+FixIt Team`;
+
+  sendMail(email, subject, text)
+    .then(async (result) => {
+      if (result) {
+        const query = `
+        INSERT INTO otp_verifications (email, otp) 
+        VALUES (?, ?) 
+        ON DUPLICATE KEY UPDATE otp = VALUES(otp), created_at = CURRENT_TIMESTAMP;
+    `;
+        await db.query(query, [email, otp]);
+        res.status(200).json({ message: "OTP sent successfully", otp });
+      } else {
+        res.status(500).json({ message: "Error sending OTP" });
+      }
+    })
+    .catch((error) => {
+      console.error("Error sending OTP:", error);
+      res.status(500).json({ message: "Error sending OTP" });
+    });
+});
+
+app.post("/verify-otp", (req, res) => {
+  const { email, otp } = req.body;
+
+  const query = `SELECT * FROM otp_verifications WHERE email = ?`;
+  db.query(query, [email], (err, result) => {
+    if (err) {
+      console.error("Database error:", err);
+      return res.status(500).json({ message: "Internal Server Error" });
+    }
+
+    if (result.length === 0) {
+      return res.status(404).json({ message: "Email not found" });
+    }
+
+    const otpData = result[0];
+    const originalOtp = parseInt(otpData.otp, 10);
+    if (originalOtp === parseInt(otp, 10)) {
+      const deleteQuery = `DELETE FROM otp_verifications WHERE email = ?`;
+      db.query(deleteQuery, [email], (deleteErr) => {
+        if (deleteErr) {
+          console.error("Error deleting OTP:", deleteErr);
+          return res.status(500).json({ message: "Internal Server Error" });
+        }
+        return res.status(200).json({ message: "OTP verified successfully" });
+      });
+    } else {
+      return res.status(400).json({ message: "Invalid OTP" });
+    }
+  });
 });
 
 // Upload endpoint
