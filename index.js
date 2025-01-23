@@ -37,8 +37,6 @@ db.connect((err) => {
   }
 });
 
-let OTP = 0;
-
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
     cb(null, path.join(__dirname, "./worker_proofs"));
@@ -98,7 +96,6 @@ app.post("/send-otp", (req, res) => {
     return Math.floor(1000 + Math.random() * 9000);
   };
   const otp = generateOtp();
-  OTP = otp;
   const subject = "OTP for Fixit Account Verification";
   const text = `
 Dear User,
